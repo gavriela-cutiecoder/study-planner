@@ -3,12 +3,25 @@ import pandas as pd
 from datetime import datetime, timedelta
 
 st.set_page_config(page_title="Study Anchor", layout="centered")
+
+# Styling: Clean, Modern borders with standard Streamlit buttons
+st.markdown("""
+    <style>
+    .stApp { background-color: #F8FAFC; }
+    div[data-testid="stVerticalBlockBorderWrapper"] {
+        background-color: white; border-radius: 12px;
+        border: 1px solid #E2E8F0; padding: 25px; margin-bottom: 20px;
+    }
+    h1, h2, h3 { color: #0e1117; font-family: sans-serif; }
+    </style>
+    """, unsafe_allow_html=True)
+
 st.title("📅 Study Anchor Architect")
 
-if 'exams' not in st.session_state:
-    st.session_state.exams = []
+if 'exams' not in st.session_state: st.session_state.exams = []
+if 'manual_moves' not in st.session_state: st.session_state.manual_moves = {}
 
-# --- Sidebar Inputs ---
+# --- Sidebar: Add Exams ---
 with st.sidebar:
     st.header("➕ Add New Test")
     name = st.text_input("Subject Name")
@@ -16,65 +29,127 @@ with st.sidebar:
     difficulty = st.selectbox("Difficulty", ["1 (7 days)", "2 (10 days)", "3 (14 days)"])
     if st.button("Add to Schedule"):
         st.session_state.exams.append({"name": name, "date": test_date, "diff": difficulty[0]})
+    
+    st.divider()
+    if st.button("🗑️ Reset Everything"):
+        st.session_state.exams = []
+        st.session_state.manual_moves = {}
+        st.rerun()
 
-# --- Planning Logic ---
+# --- Logic: Generate the Roadmap ---
 if st.session_state.exams:
     calendar_data = []
     diff_map = {"1": 7, "2": 10, "3": 14}
     
-    # Sort by date
-    sorted_exams = sorted(st.session_state.exams, key=lambda x: x['date'])
-    occupied_dates = {}
-
-    for exam in sorted_exams:
+    for exam in st.session_state.exams:
         total_days = diff_map[exam['diff']]
-        sim_n = max(2, round(total_days * 0.2))
-        prac_n = round(total_days * 0.3)
+        sim_n, prac_n = max(2, round(total_days * 0.2)), round(total_days * 0.3)
         study_n = total_days - sim_n - prac_n
         
-        exam_summary = {"name": exam['name'], "date": exam['date'], "days": total_days, "phases": {}}
-        
-        # Anchor Simulations
         check_date = exam['date'] - timedelta(days=1)
-        sim_dates = []
-        while len(sim_dates) < sim_n:
-            if check_date not in occupied_dates:
-                occupied_dates[check_date] = f"SIM: {exam['name']}"
-                sim_dates.append(check_date)
-                calendar_data.append({"Date": check_date, "Subject": exam['name'], "Type": "Simulation"})
-            check_date -= timedelta(days=1)
-        exam_summary["phases"]["Simulations"] = sorted(sim_dates)
-
-        # Fill Practice and Study
-        for phase, count, label in [("Practice", prac_n, "Practice"), ("Study", study_n, "Study")]:
-            p_dates = []
-            while len(p_dates) < count:
-                if check_date not in occupied_dates:
-                    occupied_dates[check_date] = f"{label}: {exam['name']}"
-                    p_dates.append(check_date)
-                    calendar_data.append({"Date": check_date, "Subject": exam['name'], "Type": label})
+        # We store percentages here to show them in the Subject View
+        phases = [("Simulation", sim_n, "🔴", "20%"), ("Practice", prac_n, "🟡", "30%"), ("Study", study_n, "🔵", "50%")]
+        
+        for phase, count, label, pct in phases:
+            for i in range(count):
+                task_id = f"{exam['name']}_{phase}_{i}"
+                final_date = st.session_state.manual_moves.get(task_id, check_date)
+                
+                calendar_data.append({
+                    "ID": task_id, "Date": final_date, "Subject": exam['name'],
+                    "Type": phase, "Label": label, "Pct": pct,
+                    "IsMoved": task_id in st.session_state.manual_moves
+                })
                 check_date -= timedelta(days=1)
-            exam_summary["phases"][label] = sorted(p_dates)
 
-        # --- Beautiful UI Display ---
-        with st.container(border=True):
-            st.subheader(f"{exam['name']} – {exam['date'].strftime('%d/%m')} (Level {exam['diff']})")
-            st.caption(f"🏁 {total_days} days of preparation")
+    # --- TABS ---
+    tab1, tab2 = st.tabs(["📚 View by Subject", "📆 View by Date"])
+
+    with tab1:
+        for exam in st.session_state.exams:
+            with st.container(border=True):
+                # Using columns to create a "Dashboard Header"
+                header_col, info_col = st.columns([2, 1])
+                with header_col:
+                    st.markdown(f"### 📘 {exam['name']}")
+                with info_col:
+                    st.markdown(f"**Goal:** {exam['date'].strftime('%d/%m')}")
+
+                st.divider() # Adds a clean thin line
+
+                # Using columns for the 3 phases to make it look like a "Scorecard"
+                c1, c2, c3 = st.columns(3)
+                sub_tasks = [d for d in calendar_data if d['Subject'] == exam['name']]
+                
+                cols = [c1, c2, c3]
+                for i, phase in enumerate(["Simulation", "Practice", "Study"]):
+                    p_tasks = sorted([d for d in sub_tasks if d['Type'] == phase], key=lambda x: x['Date'])
+                    if p_tasks:
+                        with cols[i]:
+                            st.caption(f"{phase.upper()} ({p_tasks[0]['Pct']})")
+                            d_start = p_tasks[0]['Date'].strftime('%d/%m')
+                            d_end = p_tasks[-1]['Date'].strftime('%d/%m')
+                            st.markdown(f"**{d_start} — {d_end}**")
+                            st.write(f"_{len(p_tasks)} days_")
+
+    with tab2:
+        st.subheader("Your Daily Roadmap")
+        
+        with st.expander("🛠️ Need to reschedule a specific day?"):
+            task_list = [f"{d['Date'].strftime('%d/%m')} - {d['Subject']} ({d['Type']})" for d in calendar_data]
+            to_move = st.selectbox("Pick the task to change:", task_list)
+            selected_idx = task_list.index(to_move)
+            target = calendar_data[selected_idx]
+            new_date = st.date_input("Select new date:", target['Date'])
+            if st.button("Save Personal Change"):
+                st.session_state.manual_moves[target['ID']] = new_date
+                st.rerun()
+
+        st.divider()
+        
+        # Defining our Chic Color Palette
+        check_colors = {
+            "Simulation": "#DC2626", # Crimson
+            "Practice": "#D97706",   # Amber
+            "Study": "#2563EB"        # Royal Blue
+        }
+
+        df = pd.DataFrame(calendar_data).sort_values("Date")
+        for date, group in df.groupby("Date"):
+            st.markdown(f"#### {date.strftime('%A, %d %B')}")
             
-            for phase, dates in exam_summary["phases"].items():
-                date_str = f"{dates[0].strftime('%d/%m')}–{dates[-1].strftime('%d/%m')}" if len(dates) > 1 else dates[0].strftime('%d/%m')
-                pct = "20%" if phase == "Simulations" else "30%" if phase == "Practice" else "50%"
-                st.write(f"**{phase} {pct}** – {date_str} ({len(dates)} days)")
+            for _, row in group.iterrows():
+                color = check_colors.get(row['Type'], "#64748B")
+                
+                # The Chic Checkmark Card
+                st.markdown(f"""
+                    <div style="
+                        display: flex;
+                        align-items: center;
+                        background-color: white;
+                        padding: 12px;
+                        border-radius: 10px;
+                        border: 1px solid #F1F5F9;
+                        margin-bottom: 8px;
+                        box-shadow: 0 2px 4px rgba(0,0,0,0.02);
+                    ">
+                        <div style="color: {color}; font-size: 1.2rem; margin-right: 15px; font-weight: bold;">✓</div>
+                        <div>
+                            <div style="color: #64748B; font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;">
+                                {row['Type']}
+                            </div>
+                            <div style="color: #1E293B; font-size: 1rem; font-weight: 500;">
+                                {row['Subject']}
+                            </div>
+                        </div>
+                    </div>
+                """, unsafe_allow_html=True)
 
-    # --- CSV Export for Google Calendar ---
+    # --- CSV Export ---
     st.divider()
-    if calendar_data:
-        export_df = pd.DataFrame(calendar_data)
-        # Format for Google Calendar Import
-        gcal_df = pd.DataFrame({
-            'Subject': export_df['Subject'] + " (" + export_df['Type'] + ")",
-            'Start Date': export_df['Date'],
-            'All Day Event': True
-        })
-        csv = gcal_df.to_csv(index=False).encode('utf-8')
-        st.download_button("📥 Download for Google Calendar", csv, "study_schedule.csv", "text/csv")
+    csv_df = pd.DataFrame(calendar_data)
+    gcal_df = pd.DataFrame({
+        'Subject': "[" + csv_df['Subject'].str.upper() + "] " + csv_df['Type'],
+        'Start Date': csv_df['Date'], 'All Day Event': True
+    })
+    st.download_button("📥 Download for Google Calendar", gcal_df.to_csv(index=False).encode('utf-8'), "study_plan.csv", "text/csv")
