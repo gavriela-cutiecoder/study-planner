@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 
 st.set_page_config(page_title="Study Anchor", layout="centered")
 
-# Styling: Clean, Modern borders with standard Streamlit buttons
+# --- Chic Styling ---
 st.markdown("""
     <style>
     .stApp { background-color: #F8FAFC; }
@@ -21,7 +21,7 @@ st.title("📅 Study Anchor Architect")
 if 'exams' not in st.session_state: st.session_state.exams = []
 if 'manual_moves' not in st.session_state: st.session_state.manual_moves = {}
 
-# --- Sidebar: Add Exams ---
+# --- Sidebar ---
 with st.sidebar:
     st.header("➕ Add New Test")
     name = st.text_input("Subject Name")
@@ -31,116 +31,128 @@ with st.sidebar:
         st.session_state.exams.append({"name": name, "date": test_date, "diff": difficulty[0]})
     
     st.divider()
-    if st.button("🗑️ Reset Everything"):
+    if st.button("🗑️ Clear All Data"):
         st.session_state.exams = []
         st.session_state.manual_moves = {}
         st.rerun()
 
-# --- Logic: Generate the Roadmap ---
+# --- Logic: Ironclad Simulation Reservation ---
 if st.session_state.exams:
     calendar_data = []
-    diff_map = {"1": 7, "2": 10, "3": 14}
+    # This is the global vault that forbids ANY overlaps on simulation days
+    global_simulation_vault = {} 
     
-    for exam in st.session_state.exams:
+    diff_map = {"1": 7, "2": 10, "3": 14}
+    # Sort by test date to give priority to the closest exams
+    sorted_exams = sorted(st.session_state.exams, key=lambda x: x['date'])
+    
+    # STEP 1: Pre-calculate all Simulation days and LOCK them
+    for exam in sorted_exams:
         total_days = diff_map[exam['diff']]
-        sim_n, prac_n = max(2, round(total_days * 0.2)), round(total_days * 0.3)
-        study_n = total_days - sim_n - prac_n
+        sim_count = max(2, round(total_days * 0.2))
+        
+        # Start looking for sim days from the day before the test
+        sim_check = exam['date'] - timedelta(days=1)
+        placed_sims = 0
+        while placed_sims < sim_count:
+            # Task ID for manual overrides
+            task_id = f"{exam['name']}_Simulation_{placed_sims}"
+            
+            if task_id in st.session_state.manual_moves:
+                target_date = st.session_state.manual_moves[task_id]
+            else:
+                # Find the next truly empty day in the vault
+                while sim_check in global_simulation_vault:
+                    sim_check -= timedelta(days=1)
+                target_date = sim_check
+            
+            # LOCK this date for this specific subject's simulation
+            global_simulation_vault[target_date] = exam['name']
+            
+            calendar_data.append({
+                "ID": task_id, "Date": target_date, "Subject": exam['name'],
+                "Type": "Simulation", "Color": "#DC2626", "Pct": "20%",
+                "IsMoved": task_id in st.session_state.manual_moves
+            })
+            sim_check -= timedelta(days=1)
+            placed_sims += 1
+
+    # STEP 2: Place Practice and Study tasks (allowing overlap with each other, but NOT with Simulations)
+    for exam in sorted_exams:
+        total_days = diff_map[exam['diff']]
+        prac_n = round(total_days * 0.3)
+        study_n = total_days - max(2, round(total_days * 0.2)) - prac_n
         
         check_date = exam['date'] - timedelta(days=1)
-        # We store percentages here to show them in the Subject View
-        phases = [("Simulation", sim_n, "🔴", "20%"), ("Practice", prac_n, "🟡", "30%"), ("Study", study_n, "🔵", "50%")]
         
-        for phase, count, label, pct in phases:
-            for i in range(count):
-                task_id = f"{exam['name']}_{phase}_{i}"
-                final_date = st.session_state.manual_moves.get(task_id, check_date)
+        for p_name, p_count, p_color, p_pct in [("Practice", prac_n, "#D97706", "30%"), ("Study", study_n, "#2563EB", "50%")]:
+            placed = 0
+            while placed < p_count:
+                task_id = f"{exam['name']}_{p_name}_{placed}"
+                
+                if task_id in st.session_state.manual_moves:
+                    final_date = st.session_state.manual_moves[task_id]
+                else:
+                    # Find a day that is NOT in the simulation vault
+                    while check_date in global_simulation_vault:
+                        check_date -= timedelta(days=1)
+                    final_date = check_date
                 
                 calendar_data.append({
                     "ID": task_id, "Date": final_date, "Subject": exam['name'],
-                    "Type": phase, "Label": label, "Pct": pct,
+                    "Type": p_name, "Color": p_color, "Pct": p_pct,
                     "IsMoved": task_id in st.session_state.manual_moves
                 })
                 check_date -= timedelta(days=1)
+                placed += 1
 
     # --- TABS ---
     tab1, tab2 = st.tabs(["📚 View by Subject", "📆 View by Date"])
 
     with tab1:
         for exam in st.session_state.exams:
+            total_prep = diff_map[exam['diff']]
             with st.container(border=True):
-                # Using columns to create a "Dashboard Header"
-                header_col, info_col = st.columns([2, 1])
-                with header_col:
-                    st.markdown(f"### 📘 {exam['name']}")
-                with info_col:
-                    st.markdown(f"**Goal:** {exam['date'].strftime('%d/%m')}")
-
-                st.divider() # Adds a clean thin line
-
-                # Using columns for the 3 phases to make it look like a "Scorecard"
-                c1, c2, c3 = st.columns(3)
-                sub_tasks = [d for d in calendar_data if d['Subject'] == exam['name']]
+                c_head, c_info = st.columns([2, 1])
+                c_head.subheader(f"📘 {exam['name']}")
+                c_info.write(f"**Goal:** {exam['date'].strftime('%d/%m')}")
+                st.caption(f"Level {exam['diff']} — {total_prep} days prep")
+                st.divider()
                 
-                cols = [c1, c2, c3]
-                for i, phase in enumerate(["Simulation", "Practice", "Study"]):
-                    p_tasks = sorted([d for d in sub_tasks if d['Type'] == phase], key=lambda x: x['Date'])
+                sub_tasks = [d for d in calendar_data if d['Subject'] == exam['name']]
+                cols = st.columns(3)
+                for i, p_type in enumerate(["Simulation", "Practice", "Study"]):
+                    p_tasks = sorted([d for d in sub_tasks if d['Type'] == p_type], key=lambda x: x['Date'])
                     if p_tasks:
                         with cols[i]:
-                            st.caption(f"{phase.upper()} ({p_tasks[0]['Pct']})")
-                            d_start = p_tasks[0]['Date'].strftime('%d/%m')
-                            d_end = p_tasks[-1]['Date'].strftime('%d/%m')
-                            st.markdown(f"**{d_start} — {d_end}**")
+                            st.caption(f"{p_type.upper()}")
+                            d_start, d_end = p_tasks[0]['Date'].strftime('%d/%m'), p_tasks[-1]['Date'].strftime('%d/%m')
+                            st.markdown(f"**{d_start}—{d_end}**")
                             st.write(f"_{len(p_tasks)} days_")
 
     with tab2:
         st.subheader("Your Daily Roadmap")
-        
-        with st.expander("🛠️ Need to reschedule a specific day?"):
-            task_list = [f"{d['Date'].strftime('%d/%m')} - {d['Subject']} ({d['Type']})" for d in calendar_data]
-            to_move = st.selectbox("Pick the task to change:", task_list)
+        with st.expander("🛠️ Personal Change (Move a Task)"):
+            task_list = [f"{d['Date'].strftime('%d/%m')} - {d['Subject']} ({d['Type']})" for d in sorted(calendar_data, key=lambda x: x['Date'])]
+            to_move = st.selectbox("Pick task:", task_list)
             selected_idx = task_list.index(to_move)
-            target = calendar_data[selected_idx]
+            target = sorted(calendar_data, key=lambda x: x['Date'])[selected_idx]
             new_date = st.date_input("Select new date:", target['Date'])
-            if st.button("Save Personal Change"):
+            if st.button("Save Move"):
                 st.session_state.manual_moves[target['ID']] = new_date
                 st.rerun()
 
         st.divider()
-        
-        # Defining our Chic Color Palette
-        check_colors = {
-            "Simulation": "#DC2626", # Crimson
-            "Practice": "#D97706",   # Amber
-            "Study": "#2563EB"        # Royal Blue
-        }
-
-        df = pd.DataFrame(calendar_data).sort_values("Date")
-        for date, group in df.groupby("Date"):
+        df_roadmap = pd.DataFrame(calendar_data).sort_values("Date")
+        for date, group in df_roadmap.groupby("Date"):
             st.markdown(f"#### {date.strftime('%A, %d %B')}")
-            
             for _, row in group.iterrows():
-                color = check_colors.get(row['Type'], "#64748B")
-                
-                # The Chic Checkmark Card
                 st.markdown(f"""
-                    <div style="
-                        display: flex;
-                        align-items: center;
-                        background-color: white;
-                        padding: 12px;
-                        border-radius: 10px;
-                        border: 1px solid #F1F5F9;
-                        margin-bottom: 8px;
-                        box-shadow: 0 2px 4px rgba(0,0,0,0.02);
-                    ">
-                        <div style="color: {color}; font-size: 1.2rem; margin-right: 15px; font-weight: bold;">✓</div>
+                    <div style="display: flex; align-items: center; background-color: white; padding: 12px; border-radius: 10px; border: 1px solid #F1F5F9; margin-bottom: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.02);">
+                        <div style="color: {row['Color']}; font-size: 1.2rem; margin-right: 15px; font-weight: bold;">✓</div>
                         <div>
-                            <div style="color: #64748B; font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;">
-                                {row['Type']}
-                            </div>
-                            <div style="color: #1E293B; font-size: 1rem; font-weight: 500;">
-                                {row['Subject']}
-                            </div>
+                            <div style="color: #64748B; font-size: 0.7rem; font-weight: 700; text-transform: uppercase;">{row['Type']}</div>
+                            <div style="color: #1E293B; font-size: 1rem; font-weight: 600;">{row['Subject']}</div>
                         </div>
                     </div>
                 """, unsafe_allow_html=True)
