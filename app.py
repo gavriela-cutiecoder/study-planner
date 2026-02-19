@@ -13,155 +13,149 @@ st.markdown("""
         border: 1px solid #E2E8F0; padding: 25px; margin-bottom: 20px;
     }
     h1, h2, h3 { color: #0e1117; font-family: sans-serif; }
+    .stCheckbox label p { font-size: 1rem; font-weight: 600; color: #1E293B; }
+    .countdown-box {
+        background-color: #EEF2FF;
+        border: 1px solid #C7D2FE;
+        padding: 15px;
+        border-radius: 10px;
+        text-align: center;
+        margin-bottom: 25px;
+    }
     </style>
     """, unsafe_allow_html=True)
 
 st.title("📅 Study Anchor Architect")
 
+# Initialize Session State
 if 'exams' not in st.session_state: st.session_state.exams = []
 if 'manual_moves' not in st.session_state: st.session_state.manual_moves = {}
+if 'completed_tasks' not in st.session_state: st.session_state.completed_tasks = {}
+
+# --- NEW: Goal Countdown Logic ---
+if st.session_state.exams:
+    # Find the earliest exam date
+    earliest_exam = min(st.session_state.exams, key=lambda x: x['date'])
+    days_left = (earliest_exam['date'] - datetime.now().date()).days
+    
+    if days_left > 0:
+        st.markdown(f"""
+            <div class="countdown-box">
+                <span style="color: #4338CA; font-weight: 700; font-size: 1.1rem;">
+                    🚀 {days_left} Days until your {earliest_exam['name']} exam!
+                </span>
+            </div>
+        """, unsafe_allow_html=True)
+    elif days_left == 0:
+        st.markdown(f"""<div class="countdown-box"><span style="color: #DC2626; font-weight: 700;">🔥 It's Exam Day for {earliest_exam['name']}! Good luck!</span></div>""", unsafe_allow_html=True)
 
 # --- Sidebar ---
 with st.sidebar:
     st.header("➕ Add New Test")
-    name = st.text_input("Subject Name")
-    test_date = st.date_input("Test Date")
-    difficulty = st.selectbox("Difficulty", ["1 (7 days)", "2 (10 days)", "3 (14 days)"])
-    if st.button("Add to Schedule"):
-        st.session_state.exams.append({"name": name, "date": test_date, "diff": difficulty[0]})
+    with st.form("add_test_form", clear_on_submit=True):
+        name = st.text_input("Subject Name")
+        test_date = st.date_input("Test Date")
+        difficulty = st.selectbox("Difficulty", ["1 (7 days)", "2 (10 days)", "3 (14 days)"])
+        submit = st.form_submit_button("Add to Schedule")
+        
+        if submit and name:
+            if not any(e['name'].lower() == name.lower() for e in st.session_state.exams):
+                st.session_state.exams.append({"name": name, "date": test_date, "diff": difficulty[0]})
+                st.rerun()
     
     st.divider()
-    if st.button("🗑️ Clear All Data"):
-        st.session_state.exams = []
-        st.session_state.manual_moves = {}
+    if st.button("🗑️ Full Data Wipe"):
+        st.session_state.clear()
         st.rerun()
 
-# --- Logic: Ironclad Simulation Reservation ---
-if st.session_state.exams:
-    calendar_data = []
-    # This is the global vault that forbids ANY overlaps on simulation days
-    global_simulation_vault = {} 
-    
+# --- Logic: The "Strict Step" Scheduler ---
+def build_clean_roadmap():
+    fresh_list = []
+    vault = {} 
     diff_map = {"1": 7, "2": 10, "3": 14}
-    # Sort by test date to give priority to the closest exams
-    sorted_exams = sorted(st.session_state.exams, key=lambda x: x['date'])
+    if not st.session_state.exams: return []
+    sorted_exams = sorted(st.session_state.exams, key=lambda x: (int(x['diff']), x['date']), reverse=True)
     
-    # STEP 1: Pre-calculate all Simulation days and LOCK them
+    # 1. Place Simulations
     for exam in sorted_exams:
-        total_days = diff_map[exam['diff']]
-        sim_count = max(2, round(total_days * 0.2))
-        
-        # Start looking for sim days from the day before the test
+        sim_count = max(2, round(diff_map[exam['diff']] * 0.2))
         sim_check = exam['date'] - timedelta(days=1)
-        placed_sims = 0
-        while placed_sims < sim_count:
-            # Task ID for manual overrides
-            task_id = f"{exam['name']}_Simulation_{placed_sims}"
-            
-            if task_id in st.session_state.manual_moves:
-                target_date = st.session_state.manual_moves[task_id]
-            else:
-                # Find the next truly empty day in the vault
-                while sim_check in global_simulation_vault:
-                    sim_check -= timedelta(days=1)
+        for i in range(sim_count):
+            task_id = f"{exam['name']}_Simulation_{i}"
+            target_date = st.session_state.manual_moves.get(task_id, None)
+            if not target_date:
+                while sim_check in vault: sim_check -= timedelta(days=1)
                 target_date = sim_check
-            
-            # LOCK this date for this specific subject's simulation
-            global_simulation_vault[target_date] = exam['name']
-            
-            calendar_data.append({
-                "ID": task_id, "Date": target_date, "Subject": exam['name'],
-                "Type": "Simulation", "Color": "#DC2626", "Pct": "20%",
-                "IsMoved": task_id in st.session_state.manual_moves
-            })
-            sim_check -= timedelta(days=1)
-            placed_sims += 1
+                sim_check -= timedelta(days=1)
+            vault[target_date] = 'sim'
+            fresh_list.append({"ID": task_id, "Date": target_date, "Subject": exam['name'], "Type": "Simulation", "Color": "#DC2626", "IsPriority": int(exam['diff']) == 3})
 
-    # STEP 2: Place Practice and Study tasks (allowing overlap with each other, but NOT with Simulations)
+    # 2. Place Practice/Study
     for exam in sorted_exams:
-        total_days = diff_map[exam['diff']]
-        prac_n = round(total_days * 0.3)
-        study_n = total_days - max(2, round(total_days * 0.2)) - prac_n
-        
+        total = diff_map[exam['diff']]
+        p_n, s_n = round(total * 0.3), total - max(2, round(total * 0.2)) - round(total * 0.3)
         check_date = exam['date'] - timedelta(days=1)
-        
-        for p_name, p_count, p_color, p_pct in [("Practice", prac_n, "#D97706", "30%"), ("Study", study_n, "#2563EB", "50%")]:
-            placed = 0
-            while placed < p_count:
-                task_id = f"{exam['name']}_{p_name}_{placed}"
-                
-                if task_id in st.session_state.manual_moves:
-                    final_date = st.session_state.manual_moves[task_id]
-                else:
-                    # Find a day that is NOT in the simulation vault
-                    while check_date in global_simulation_vault:
+        course_dates = []
+        for p_name, p_count, p_color in [("Practice", p_n, "#D97706"), ("Study", s_n, "#2563EB")]:
+            for i in range(p_count):
+                task_id = f"{exam['name']}_{p_name}_{i}"
+                final_date = st.session_state.manual_moves.get(task_id, None)
+                if not final_date:
+                    while True:
+                        curr_v = vault.get(check_date, 0)
+                        already_has_subject = any(d['Date'] == check_date and d['Subject'] == exam['name'] for d in fresh_list)
+                        if curr_v != 'sim' and curr_v < 2 and not already_has_subject: break
                         check_date -= timedelta(days=1)
                     final_date = check_date
-                
-                calendar_data.append({
-                    "ID": task_id, "Date": final_date, "Subject": exam['name'],
-                    "Type": p_name, "Color": p_color, "Pct": p_pct,
-                    "IsMoved": task_id in st.session_state.manual_moves
-                })
+                if final_date not in vault: vault[final_date] = 1
+                elif vault[final_date] != 'sim': vault[final_date] += 1
+                fresh_list.append({"ID": task_id, "Date": final_date, "Subject": exam['name'], "Type": p_name, "Color": p_color, "IsPriority": int(exam['diff']) == 3})
+                course_dates.append(final_date)
                 check_date -= timedelta(days=1)
-                placed += 1
 
-    # --- TABS ---
-    tab1, tab2 = st.tabs(["📚 View by Subject", "📆 View by Date"])
+        # 3. Refresh Logic
+        course_dates.sort()
+        for i in range(len(course_dates) - 1):
+            gap = (course_dates[i+1] - course_dates[i]).days
+            if gap > 7:
+                ref_date = course_dates[i] + timedelta(days=gap // 2)
+                while vault.get(ref_date) == 'sim' and ref_date < course_dates[i+1]: ref_date += timedelta(days=1)
+                if ref_date < course_dates[i+1] and vault.get(ref_date) != 'sim':
+                    fresh_list.append({"ID": f"{exam['name']}_Refresh_{i}", "Date": ref_date, "Subject": exam['name'], "Type": "Refresh", "Color": "#10B981", "IsPriority": False})
+    return fresh_list
 
-    with tab1:
-        for exam in st.session_state.exams:
-            total_prep = diff_map[exam['diff']]
-            with st.container(border=True):
-                c_head, c_info = st.columns([2, 1])
-                c_head.subheader(f"📘 {exam['name']}")
-                c_info.write(f"**Goal:** {exam['date'].strftime('%d/%m')}")
-                st.caption(f"Level {exam['diff']} — {total_prep} days prep")
-                st.divider()
-                
-                sub_tasks = [d for d in calendar_data if d['Subject'] == exam['name']]
-                cols = st.columns(3)
-                for i, p_type in enumerate(["Simulation", "Practice", "Study"]):
-                    p_tasks = sorted([d for d in sub_tasks if d['Type'] == p_type], key=lambda x: x['Date'])
-                    if p_tasks:
-                        with cols[i]:
-                            st.caption(f"{p_type.upper()}")
-                            d_start, d_end = p_tasks[0]['Date'].strftime('%d/%m'), p_tasks[-1]['Date'].strftime('%d/%m')
-                            st.markdown(f"**{d_start}—{d_end}**")
-                            st.write(f"_{len(p_tasks)} days_")
+calendar_data = build_clean_roadmap()
 
-    with tab2:
-        st.subheader("Your Daily Roadmap")
-        with st.expander("🛠️ Personal Change (Move a Task)"):
-            task_list = [f"{d['Date'].strftime('%d/%m')} - {d['Subject']} ({d['Type']})" for d in sorted(calendar_data, key=lambda x: x['Date'])]
-            to_move = st.selectbox("Pick task:", task_list)
-            selected_idx = task_list.index(to_move)
-            target = sorted(calendar_data, key=lambda x: x['Date'])[selected_idx]
-            new_date = st.date_input("Select new date:", target['Date'])
-            if st.button("Save Move"):
-                st.session_state.manual_moves[target['ID']] = new_date
-                st.rerun()
+# --- TABS ---
+tab1, tab2 = st.tabs(["📚 View by Subject", "📆 View by Date"])
 
-        st.divider()
-        df_roadmap = pd.DataFrame(calendar_data).sort_values("Date")
-        for date, group in df_roadmap.groupby("Date"):
+with tab1:
+    for exam in st.session_state.exams:
+        with st.container(border=True):
+            st.subheader(f"📘 {exam['name']} — {exam['date'].strftime('%d/%m')}")
+            st.divider()
+            sub = [d for d in calendar_data if d['Subject'] == exam['name']]
+            cols = st.columns(4)
+            for i, pt in enumerate(["Simulation", "Practice", "Study", "Refresh"]):
+                pts = sorted([d for d in sub if d['Type'] == pt], key=lambda x: x['Date'])
+                if pts:
+                    with cols[i]:
+                        st.caption(pt.upper())
+                        st.markdown(f"**{pts[0]['Date'].strftime('%d/%m')}**")
+
+with tab2:
+    if calendar_data:
+        df_display = pd.DataFrame(calendar_data).sort_values("Date")
+        for date, group in df_display.groupby("Date"):
             st.markdown(f"#### {date.strftime('%A, %d %B')}")
             for _, row in group.iterrows():
-                st.markdown(f"""
-                    <div style="display: flex; align-items: center; background-color: white; padding: 12px; border-radius: 10px; border: 1px solid #F1F5F9; margin-bottom: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.02);">
-                        <div style="color: {row['Color']}; font-size: 1.2rem; margin-right: 15px; font-weight: bold;">✓</div>
-                        <div>
-                            <div style="color: #64748B; font-size: 0.7rem; font-weight: 700; text-transform: uppercase;">{row['Type']}</div>
-                            <div style="color: #1E293B; font-size: 1rem; font-weight: 600;">{row['Subject']}</div>
-                        </div>
-                    </div>
-                """, unsafe_allow_html=True)
-
-    # --- CSV Export ---
-    st.divider()
-    csv_df = pd.DataFrame(calendar_data)
-    gcal_df = pd.DataFrame({
-        'Subject': "[" + csv_df['Subject'].str.upper() + "] " + csv_df['Type'],
-        'Start Date': csv_df['Date'], 'All Day Event': True
-    })
-    st.download_button("📥 Download for Google Calendar", gcal_df.to_csv(index=False).encode('utf-8'), "study_plan.csv", "text/csv")
+                with st.container(border=True):
+                    cols = st.columns([0.1, 0.9])
+                    is_done = st.session_state.completed_tasks.get(row['ID'], False)
+                    if cols[0].checkbox("", value=is_done, key=f"f_{row['ID']}"):
+                        st.session_state.completed_tasks[row['ID']] = True
+                    else: st.session_state.completed_tasks[row['ID']] = False
+                    with cols[1]:
+                        priority = " ⭐" if row['IsPriority'] else ""
+                        st.markdown(f"<span style='color:{row['Color']}; font-size:0.7rem; font-weight:700; text-transform:uppercase;'>{row['Type']}{priority}</span>", unsafe_allow_html=True)
+                        st.markdown(f"**{row['Subject']}**")
